@@ -33,6 +33,7 @@ def fetch_page_content(page_id):
 
 def sync_pages():
     """同步所有页面内容到本地"""
+    os.makedirs("notion_pages", exist_ok=True)
     pages = fetch_all_pages()
     print(f"发现 {len(pages)} 个页面，开始同步...")
 

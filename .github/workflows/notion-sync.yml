@@ -16,7 +16,7 @@ jobs:
 
       # 2. 设置 Python 环境
       - name: Set up Python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: "3.9"
 
@@ -25,14 +25,23 @@ jobs:
         run: |
           pip install notion-client markdown
 
-      # 4. 同步所有 Notion 页面到本地
+      # 4. 检查同步脚本是否存在
+      - name: Verify sync script exists
+        run: |
+          if [ ! -f "scripts/notion_sync.py" ]; then
+            echo "ERROR: scripts/notion_sync.py not found. Please ensure the script is committed to the repository."
+            exit 1
+          fi
+          echo "Script found: scripts/notion_sync.py"
+
+      # 5. 同步所有 Notion 页面到本地
       - name: Sync Notion pages
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}  # Notion Integration Key
         run: |
-          python3 scripts/sync_all_pages.py
+          python3 scripts/notion_sync.py
 
-      # 5. 提交同步后的内容
+      # 6. 提交同步后的内容
       - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
