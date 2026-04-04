@@ -45,6 +45,8 @@ jobs:
       - name: Export Notion docs
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          # 优先使用 NOTION_ROOT_PAGE_IDS（逗号分隔多个页面 ID）；兼容旧版单页面 NOTION_ROOT_PAGE_ID
+          NOTION_ROOT_PAGE_IDS: ${{ secrets.NOTION_ROOT_PAGE_IDS }}
           NOTION_ROOT_PAGE_ID: ${{ secrets.NOTION_ROOT_PAGE_ID }}
           OUT_DIR: target/notion_export
         run: python code/scripts/notion_sync.py
