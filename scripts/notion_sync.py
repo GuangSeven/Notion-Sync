@@ -6,7 +6,8 @@ from notion_client import Client
 from notion_client.errors import APIResponseError
 
 NOTION_API_KEY = os.environ["NOTION_API_KEY"]
-NOTION_ROOT_PAGE_ID = os.environ["NOTION_ROOT_PAGE_ID"]
+# 支持多顶级页面：NOTION_ROOT_PAGE_IDS（逗号分隔），兼容旧版单页面 NOTION_ROOT_PAGE_ID
+_RAW_IDS = os.environ.get("NOTION_ROOT_PAGE_IDS") or os.environ.get("NOTION_ROOT_PAGE_ID", "")
 OUT_DIR = Path(os.environ.get("OUT_DIR", "notion_export"))
 
 notion = Client(auth=NOTION_API_KEY)
@@ -36,7 +37,7 @@ def normalize_page_id(page_id: str) -> str:
         # 统一转换为 UUID 格式
         return f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
     print(
-        "\n❌ 错误：NOTION_ROOT_PAGE_ID 格式不正确！\n"
+        "\n❌ 错误：页面 ID 格式不正确！\n"
         f"   当前值：{pid!r}\n"
         "   正确格式（从 Notion 页面 URL 最后一段提取）：\n"
         "     无横线（32位）：e4536863fdb049e38526a681651d8776\n"
@@ -46,20 +47,17 @@ def normalize_page_id(page_id: str) -> str:
         "   操作步骤：\n"
         "     1. 在浏览器打开你的 Notion 页面\n"
         "     2. 复制 URL 末尾的 32 位十六进制字符串（紧跟在最后一个 '-' 之后或直接是结尾）\n"
-        "     3. 将该值填入 GitHub Secrets 中的 NOTION_ROOT_PAGE_ID\n",
+        "     3. 将该值填入 GitHub Secrets 中的 NOTION_ROOT_PAGE_IDS\n",
         file=sys.stderr,
     )
     sys.exit(1)
 
 
-def validate_token_and_page(page_id: str):
+def validate_notion_token():
     """
-    在启动时做两项轻量探测：
-    1. 调用 users.me() 验证 NOTION_API_KEY 有效；
-    2. 调用 pages.retrieve() 验证根页面可访问。
-    任一失败均打印可操作的修复步骤并退出。
+    验证 NOTION_API_KEY 是否有效，失败时打印修复步骤并退出。
+    单独验证 token，不阻塞后续各页面的可访问性检查。
     """
-    # 1. 验证 token
     try:
         me = notion.users.me()
         print(f"✅ Notion token 有效，当前 integration：{me.get('name', '(未知)')}")
@@ -73,34 +71,6 @@ def validate_token_and_page(page_id: str):
             "     3. 确保该 integration 所在 workspace 与目标页面一致\n",
             file=sys.stderr,
         )
-        sys.exit(1)
-
-    # 2. 验证根页面可访问
-    try:
-        notion.pages.retrieve(page_id=page_id)
-        print(f"✅ 根页面 {page_id} 可访问")
-    except APIResponseError as e:
-        status = getattr(e, "status", None) or getattr(e, "code", None)
-        if status in (404, "object_not_found", "unauthorized"):
-            print(
-                f"\n❌ 无法访问根页面（{status}）：{page_id}\n"
-                "   常见原因及修复步骤：\n"
-                "     1. 【页面未分享给 integration】\n"
-                "        → 在 Notion 打开该页面，右上角 'Share' → 'Invite' → 搜索并添加你的 integration\n"
-                "        → 注意：子页面默认继承父页面权限，但根页面必须手动授权\n"
-                "     2. 【Page ID 不正确】\n"
-                f"        → 当前 NOTION_ROOT_PAGE_ID = {page_id!r}\n"
-                "        → 请从 Notion 页面 URL 末尾重新提取 32 位十六进制 ID\n"
-                "     3. 【Integration token 与 workspace 不匹配】\n"
-                "        → 确认 NOTION_API_KEY 对应的 integration 与该页面在同一个 workspace\n"
-                f"   原始错误：{e}\n",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"\n❌ 访问根页面时发生错误（HTTP {status}）：{e}\n",
-                file=sys.stderr,
-            )
         sys.exit(1)
 
 
@@ -134,10 +104,6 @@ def list_block_children(block_id: str):
             break
         cursor = resp.get("next_cursor")
     return results
-
-    # Separate inline content from child-page references
-    content_lines: list[str] = []
-    child_page_blocks: list[dict] = []
 
 def rich_text_to_plain(rt) -> str:
     """将 rich_text 数组转换为纯文本"""
@@ -206,20 +172,32 @@ def export_page_recursive(page_id: str, parent_dir: Path):
     (page_dir / "index.md").write_text("".join(md_lines), encoding="utf-8")
     print(f"  导出：{page_dir / 'index.md'}")
 
-def sync_pages():
-    """同步所有页面内容到本地"""
-    os.makedirs("notion_pages", exist_ok=True)
-    pages = fetch_all_pages()
-    print(f"发现 {len(pages)} 个页面，开始同步...")
+    for blk in child_pages:
+        export_page_recursive(blk["id"], page_dir)
 
 
 def main():
-    root_page_id = normalize_page_id(NOTION_ROOT_PAGE_ID)
-    validate_token_and_page(root_page_id)
+    if not _RAW_IDS.strip():
+        print(
+            "❌ 未配置页面 ID！请设置环境变量 NOTION_ROOT_PAGE_IDS（逗号分隔多个页面 ID）"
+            " 或 NOTION_ROOT_PAGE_ID（单页面，兼容旧版）。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    page_ids = [normalize_page_id(pid.strip()) for pid in _RAW_IDS.split(",") if pid.strip()]
+    if not page_ids:
+        print("❌ 未解析到有效的页面 ID，请检查 NOTION_ROOT_PAGE_IDS 的值。", file=sys.stderr)
+        sys.exit(1)
+
+    validate_notion_token()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"开始从根页面 {root_page_id} 递归导出...")
-    export_page_recursive(root_page_id, OUT_DIR)
-    print(f"导出完成，文件保存到：{OUT_DIR}")
+
+    for page_id in page_ids:
+        print(f"开始从根页面 {page_id} 递归导出...")
+        export_page_recursive(page_id, OUT_DIR)
+
+    print(f"全部导出完成，文件保存到：{OUT_DIR}")
 
 
 if __name__ == "__main__":
