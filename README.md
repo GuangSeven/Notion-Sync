@@ -1,4 +1,4 @@
-# Notion-Sync
+# NotionSync
 
 将 Notion 文档自动同步到 GitHub 仓库中。
 
