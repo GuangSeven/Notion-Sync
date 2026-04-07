@@ -132,6 +132,11 @@ def block_text_summary(block: dict) -> str:
     return ""
 
 
+def escape_md_table_cell(text: str) -> str:
+    """转义 Markdown 表格单元格中的特殊字符"""
+    return text.replace("|", "\\|").replace("\n", "<br>").strip()
+
+
 def block_to_md(block: dict) -> str:
     """将单个 Notion block 转换为 Markdown 文本"""
     t = block["type"]
@@ -159,7 +164,7 @@ def block_to_md(block: dict) -> str:
         return f"```{lang}\n{rich_text_to_plain(b.get('rich_text'))}\n```\n"
     if t == "column_list":
         columns = list_block_children(block["id"])
-        lines = []
+        cells = []
         for col in columns:
             if col.get("type") != "column":
                 continue
@@ -168,10 +173,17 @@ def block_to_md(block: dict) -> str:
             for child in col_children:
                 text = block_text_summary(child).strip()
                 if text:
-                    parts.append(text)
+                    parts.append(escape_md_table_cell(text))
             if parts:
-                lines.append("- " + " | ".join(parts) + "\n")
-        return "".join(lines)
+                cells.append("<br>".join(parts))
+        if not cells:
+            return ""
+        headers = [f"列{i+1}" for i in range(len(cells))]
+        return (
+            "| " + " | ".join(headers) + " |\n"
+            "| " + " | ".join(["----"] * len(headers)) + " |\n"
+            "| " + " | ".join(cells) + " |\n"
+        )
     if t == "divider":
         return "---\n"
     return f"<!-- unsupported block: {t} -->\n"
