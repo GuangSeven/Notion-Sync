@@ -170,7 +170,7 @@ def block_to_md(block: dict) -> str:
                 if text:
                     parts.append(text)
             if parts:
-                lines.append("- " + " ".join(parts) + "\n")
+                lines.append("- " + " | ".join(parts) + "\n")
         return "".join(lines)
     if t == "divider":
         return "---\n"
