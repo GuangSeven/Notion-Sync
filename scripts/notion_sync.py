@@ -139,7 +139,7 @@ def escape_md_table_cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", "<br>").strip()
 
 
-def get_file_property_url(file_property: dict) -> str:
+def get_notion_file_url(file_property: dict) -> str:
     """提取 Notion 文件属性（external/file）的可访问 URL"""
     if not isinstance(file_property, dict):
         return ""
@@ -152,10 +152,10 @@ def get_file_property_url(file_property: dict) -> str:
 
 def render_image_md(image_property: dict) -> str:
     """将 Notion image 属性渲染为 Markdown 图片语法"""
-    url = get_file_property_url(image_property)
+    url = get_notion_file_url(image_property)
     if not url:
         return ""
-    caption = rich_text_to_plain(image_property.get("caption")).strip() or "image"
+    caption = rich_text_to_plain(image_property.get("caption")).strip() or "图片"
     return f"![{caption}]({url})"
 
 
