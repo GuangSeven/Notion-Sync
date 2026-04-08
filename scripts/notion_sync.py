@@ -129,12 +129,29 @@ def block_text_summary(block: dict) -> str:
         checked = b.get("checked", False)
         mark = "x" if checked else " "
         return f"[{mark}] " + rich_text_to_plain(b.get("rich_text"))
+    if t == "image":
+        url = get_file_block_url(b)
+        if not url:
+            return ""
+        caption = rich_text_to_plain(b.get("caption")).strip() or "image"
+        return f"![{caption}]({url})"
     return ""
 
 
 def escape_md_table_cell(text: str) -> str:
     """转义 Markdown 表格单元格中的特殊字符"""
     return text.replace("|", "\\|").replace("\n", "<br>").strip()
+
+
+def get_file_block_url(file_block: dict) -> str:
+    """提取 Notion 文件类 block（image/file/video/pdf）的可访问 URL"""
+    if not isinstance(file_block, dict):
+        return ""
+    if file_block.get("type") == "external":
+        return file_block.get("external", {}).get("url", "")
+    if file_block.get("type") == "file":
+        return file_block.get("file", {}).get("url", "")
+    return ""
 
 
 def block_to_md(block: dict) -> str:
@@ -162,6 +179,12 @@ def block_to_md(block: dict) -> str:
     if t == "code":
         lang = b.get("language", "")
         return f"```{lang}\n{rich_text_to_plain(b.get('rich_text'))}\n```\n"
+    if t == "image":
+        url = get_file_block_url(b)
+        if not url:
+            return ""
+        caption = rich_text_to_plain(b.get("caption")).strip() or "image"
+        return f"![{caption}]({url})\n"
     if t == "column_list":
         columns = list_block_children(block["id"])
         cells = []
@@ -178,7 +201,7 @@ def block_to_md(block: dict) -> str:
                 cells.append("<br>".join(parts))
         if not cells:
             return ""
-        headers = [f"列{i+1}" for i in range(len(cells))]
+        headers = [""] * len(cells)
         return (
             "| " + " | ".join(headers) + " |\n"
             "| " + " | ".join(["----"] * len(headers)) + " |\n"
