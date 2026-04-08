@@ -1,9 +1,10 @@
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from notion_client import Client
-from notion_client.errors import APIResponseError
+from notion_client.errors import APIResponseError, RequestTimeoutError
 
 NOTION_API_KEY = os.environ["NOTION_API_KEY"]
 # 支持多顶级页面：NOTION_ROOT_PAGE_IDS（逗号分隔），兼容旧版单页面 NOTION_ROOT_PAGE_ID
@@ -16,6 +17,29 @@ INVALID_CHARS = r'[\\/:*?"<>|#%&{}$!@+=`~]'
 
 MAX_FILENAME_LENGTH = 120
 DEFAULT_IMAGE_ALT = "图片"
+
+
+def parse_env_int(name: str, default: str) -> int:
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"❌ 环境变量 {name} 必须是整数，当前值：{raw!r}", file=sys.stderr)
+        sys.exit(1)
+
+
+def parse_env_float(name: str, default: str) -> float:
+    raw = os.environ.get(name, default)
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"❌ 环境变量 {name} 必须是数字，当前值：{raw!r}", file=sys.stderr)
+        sys.exit(1)
+
+
+NOTION_API_MAX_RETRIES = parse_env_int("NOTION_API_MAX_RETRIES", "5")
+NOTION_API_RETRY_BASE_DELAY = parse_env_float("NOTION_API_RETRY_BASE_DELAY", "1")
+NOTION_API_RETRY_MAX_DELAY = parse_env_float("NOTION_API_RETRY_MAX_DELAY", "10")
 
 # 两个正则分别匹配无横线（32位）和带横线（UUID）两种格式
 _HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
@@ -60,8 +84,14 @@ def validate_notion_token():
     单独验证 token，不阻塞后续各页面的可访问性检查。
     """
     try:
-        me = notion.users.me()
+        me = call_notion_with_retry(notion.users.me, "验证 Notion token")
         print(f"✅ Notion token 有效，当前 integration：{me.get('name', '(未知)')}")
+    except RequestTimeoutError:
+        print(
+            "\n❌ 验证 Notion token 超时（已重试）。请稍后重试 workflow 或增大重试参数。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except APIResponseError as e:
         print(
             "\n❌ Notion API Token 无效或权限不足！\n"
@@ -73,6 +103,40 @@ def validate_notion_token():
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def call_notion_with_retry(request_fn, action: str):
+    """对 Notion API 请求进行有限次重试（超时与限流）。"""
+
+    def backoff_delay(attempt: int) -> float:
+        return min(NOTION_API_RETRY_BASE_DELAY * (2 ** (attempt - 1)), NOTION_API_RETRY_MAX_DELAY)
+
+    def is_rate_limited_error(err: APIResponseError) -> bool:
+        return getattr(err, "status", None) == 429 or str(getattr(err, "code", "")) == "rate_limited"
+
+    for attempt in range(1, NOTION_API_MAX_RETRIES + 1):
+        try:
+            return request_fn()
+        except RequestTimeoutError:
+            if attempt >= NOTION_API_MAX_RETRIES:
+                raise
+            delay = backoff_delay(attempt)
+            print(
+                f"  ⚠️ Notion 请求超时：{action}（第 {attempt}/{NOTION_API_MAX_RETRIES} 次），{delay:.1f}s 后重试...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        except APIResponseError as e:
+            if not is_rate_limited_error(e):
+                raise
+            if attempt >= NOTION_API_MAX_RETRIES:
+                raise
+            delay = backoff_delay(attempt)
+            print(
+                f"  ⚠️ Notion API 限流：{action}（第 {attempt}/{NOTION_API_MAX_RETRIES} 次），{delay:.1f}s 后重试...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
 
 
 def safe_name(name: str) -> str:
@@ -99,7 +163,24 @@ def list_block_children(block_id: str):
     results = []
     cursor = None
     while True:
-        resp = notion.blocks.children.list(block_id=block_id, start_cursor=cursor, page_size=100)
+        try:
+            resp = call_notion_with_retry(
+                lambda: notion.blocks.children.list(block_id=block_id, start_cursor=cursor, page_size=100),
+                f"读取子块 {block_id}",
+            )
+        except RequestTimeoutError:
+            print(
+                f"  ⚠️ 跳过 block {block_id} 的剩余子块：请求超时（已重试）。",
+                file=sys.stderr,
+            )
+            break
+        except APIResponseError as e:
+            status_or_code = getattr(e, "status", None) or getattr(e, "code", None)
+            print(
+                f"  ⚠️ 跳过 block {block_id} 的剩余子块（无法访问，{status_or_code}）：{e}",
+                file=sys.stderr,
+            )
+            break
         results.extend(resp.get("results", []))
         if not resp.get("has_more"):
             break
@@ -222,7 +303,13 @@ def export_page_recursive(page_id: str, parent_dir: Path):
     页面内容写入该目录的 index.md 文件。
     """
     try:
-        page = notion.pages.retrieve(page_id=page_id)
+        page = call_notion_with_retry(lambda: notion.pages.retrieve(page_id=page_id), f"读取页面 {page_id}")
+    except RequestTimeoutError:
+        print(
+            f"  ⚠️ 跳过页面 {page_id}：请求超时（已重试）。",
+            file=sys.stderr,
+        )
+        return
     except APIResponseError as e:
         status = getattr(e, "status", None) or getattr(e, "code", None)
         print(
